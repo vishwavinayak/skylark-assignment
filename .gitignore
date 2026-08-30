@@ -1,0 +1,33 @@
+# Secrets & Environment variables
+.env
+.env.local
+.env.*.local
+.streamlit/secrets.toml
+.streamlit/secrets.toml.example
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE & OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+
+
+.env
+.env.example
+.streamlit/secrets.toml.example
