@@ -231,3 +231,4 @@ GEMINI_MODEL = "gemini-1.5-pro"
 USE_MCP = "false"
 ```
 5. Click **Deploy!**
+---
