@@ -35,6 +35,8 @@ Founders need reliable, rapid visibility into company performance across two dis
 
 ## 🏗 System Architecture
 
+![System Architecture](architecture.png)
+
 The application is powered by a **LangGraph `StateGraph`** with typed state threading, conditional routing, and error resilience:
 
 ```
