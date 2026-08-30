@@ -1,303 +1,233 @@
-# 🚁 Skylark BI Agent
+# 🚁 Skylark Drones — Founder Business Intelligence Agent
 
-> A LangGraph-powered Business Intelligence agent that answers founder-level questions about your Skylark Drones operations — pulling live data from Monday.com, cleaning it deterministically with pandas, and synthesising plain-English insights via Gemini.
-
----
-
-## Live Demo
-
-> Hosted on Streamlit Community Cloud — link provided separately.
+> An enterprise-grade, LangGraph-orchestrated Business Intelligence agent that answers founder- and executive-level questions about Skylark Drones' commercial pipeline and operational delivery.
+> 
+> Built on **live Monday.com data**, calculated deterministically with **pandas**, reasoned with **Google Gemini**, and delivered via a **Streamlit** conversational interface.
 
 ---
 
-## Architecture Overview
-
-```
-User (Streamlit Chat)
-        │
-        ▼
-┌────────────────────────────────────────────────────────┐
-│               LangGraph StateGraph                     │
-│                                                        │
-│  START → [router] → intent classification              │
-│             │                                          │
-│    ┌────────┼────────────┐                            │
-│    ▼        ▼            ▼                            │
-│ [clarify] [general]   [fetch] ← Monday.com API        │
-│    │         │           │                            │
-│    END      END    [normalize] ← pandas cleaning      │
-│                        │                              │
-│                   [analyze] ← deterministic math      │
-│                        │                              │
-│              ┌─────────┴──────────┐                   │
-│              ▼                    ▼                   │
-│          [report]           [synthesize]               │
-│         (leadership)             │                    │
-│              └──────────────────►│                    │
-│                              [END] ← Gemini narrative  │
-└────────────────────────────────────────────────────────┘
-```
-
-### Key Design Decisions
-
-| Decision | Rationale |
-|---|---|
-| **pandas for all math** | Eliminates LLM hallucination on numeric results. LLM only writes prose. |
-| **MCP probe + GraphQL fallback** | MCP requires admin-enabled AI Connectors. GraphQL works universally. |
-| **Board IDs via env vars** | Avoids brittle name-based discovery; IDs are stable. |
-| **`(df, quality_report)` tuple** | Forces data-quality surfacing at every query. |
-| **LangGraph StateGraph** | Explicit routing makes conditional logic auditable and testable. |
-| **Session-level data cache** | Fetched data persists within a Streamlit session — no redundant API calls. |
+## 📑 Table of Contents
+1. [Executive Overview & Approach](#-executive-overview--approach)
+2. [System Architecture](#-system-architecture)
+3. [Core Assumptions & Disambiguations](#-core-assumptions--disambiguations)
+4. [Key Engineering Trade-offs](#-key-engineering-trade-offs)
+5. [AI Tools & Frameworks Used](#-ai-tools--frameworks-used)
+6. [Challenges Faced & Solutions](#-challenges-faced--solutions)
+7. [Cross-Board Linkage Strategy](#-cross-board-linkage-strategy)
+8. [Leadership Update Feature](#-leadership-update-feature)
+9. [Potential Future Improvements](#-potential-future-improvements)
+10. [Local Setup & Streamlit Cloud Deployment](#-local-setup--streamlit-cloud-deployment)
 
 ---
 
-## Project Structure
+## 🎯 Executive Overview & Approach
 
-```
-skylark-assignment/
-├── app/
-│   └── main.py                  # Streamlit chat UI
-├── graph/
-│   ├── state.py                 # AgentState TypedDict
-│   └── agent.py                 # LangGraph StateGraph + all nodes
-├── tools/
-│   ├── monday.py                # Monday.com data access (GraphQL + MCP)
-│   └── connection_test.py       # Standalone connectivity verifier
-├── normalize/
-│   └── clean.py                 # pandas cleaning + quality report
-├── analysis/
-│   └── bi.py                    # Deterministic BI calculations
-├── llm/
-│   └── gemini.py                # Gemini client wrapper
-├── tests/
-│   ├── test_normalize.py        # Unit tests (no Monday.com required)
-│   └── test_analysis.py
-├── .streamlit/
-│   └── config.toml              # Dark theme + server config
-├── .env.example                 # Template for local development
-├── requirements.txt
-└── README.md
-```
+Founders need reliable, rapid visibility into company performance across two distinct datasets:
+1. **Deal Funnel (CRM)**: Sales pipeline, stages, deal values, win/loss rates, closure probabilities, and sales reps.
+2. **Work Order Tracker (Operations)**: Project delivery status, completion rates, operational delays, billing milestones, and cash collections.
+
+### Our Approach
+* **Zero Math Hallucinations**: LLMs are notoriously unreliable at arithmetic, floating-point aggregations, and multi-table joins. We strictly enforce that **100% of numeric calculations are executed deterministically in Python/pandas**. The LLM (Gemini) is restricted solely to query understanding, filter extraction, and executive narration.
+* **Live Monday.com Source of Truth**: The original Excel sheets are never loaded at runtime. Live data is fetched dynamically via cursor-paginated Monday.com GraphQL API calls with automatic schema discovery.
+* **Quality-Gated Transparency**: Incomplete fields and data anomalies are surfaced in an expandable **Data Quality** badge and **Assumptions** drawer with every response, guaranteeing complete auditability.
 
 ---
 
-## Monday.com Board Setup
+## 🏗 System Architecture
 
-### Import the provided Excel files
+The application is powered by a **LangGraph `StateGraph`** with typed state threading, conditional routing, and error resilience:
 
-1. In Monday.com, click **+ Add** → **Import data** → **Excel**
-2. Import **Deal Funnel Data.xlsx** → name the board **Deal Funnel** (or any name)
-3. Import **Work Order Tracker Data.xlsx** → name the board **Work Order Tracker** (or any name)
-
-### Find your Board IDs
-
-The board ID is in the URL when viewing a board:
 ```
-https://your-company.monday.com/boards/1234567890
-                                        ^^^^^^^^^^
-                                        This is your board ID
+                            ┌──────────────── [START] ────────────────┐
+                            │                                         │
+                   _route_entry (trigger)                             │
+                 ├── leadership ──► leadership_entry                  │
+                 └── query ───────► query_understanding               │
+                                           │                          │
+                                _route_clarification                  │
+                          ├── ambiguous ──► ask_user ──► [END]        │
+                          └── clear ──────► data_retrieval ◄──────────┘
+                                                  │
+                                            normalization
+                                                  │
+                                       [Data Quality Check]
+                                                  │
+                                              analysis (pandas)
+                                                  │
+                                          insight_generation (Gemini)
+                                                  │
+                                                [END]
 ```
 
-### Recommended column types for Deal Funnel
-
-| Column | Monday Type |
-|---|---|
-| Deal Value / Amount | Numbers |
-| Stage / Status | Status |
-| Sector / Industry | Dropdown |
-| Close Date | Date |
-| Owner / Sales Rep | Person |
-| Company / Client | Text |
-
-### Recommended column types for Work Order Tracker
-
-| Column | Monday Type |
-|---|---|
-| Status | Status |
-| Start Date / End Date | Date |
-| Revenue / Contract Value | Numbers |
-| Sector | Dropdown |
-| Client / Customer | Text |
-| Owner / Assigned To | Person |
-
-> **Note:** The normalizer uses fuzzy column-name matching, so exact column names don't matter as long as they're reasonably descriptive. See `normalize/clean.py` for the full synonym list.
+### State Schema (`AgentState`)
+Every node reads and updates a shared typed state containing:
+* `query`: Natural language question from the founder.
+* `intent`: Classified domain (`deals`, `workorders`, `cross`, `leadership`, `general`).
+* `filters`: Structured parameters (`sector`, `date_range`, `stage`, `status`, `owner`, `target_metric`).
+* `required_boards`: Dynamically identified boards (`["deals"]`, `["workorders"]`, or both).
+* `raw_data`: Live items retrieved from Monday.com (cached at session level).
+* `normalized_data`: Cleaned DataFrames with canonical types and stripped header rows.
+* `metrics`: Deterministic pandas outputs (pipeline sums, win rates, delay distributions, linked rollups).
+* `data_quality`: Scoped completeness metrics, warning lists, and `has_caveat` boolean flag.
+* `assumptions`: Explicit inferences logged during understanding or calculation.
+* `final_answer`: Polished markdown output presented to the founder.
 
 ---
 
-## Local Development Setup
+## 📝 Core Assumptions & Disambiguations
 
-### Prerequisites
+### 1. The Meaning of "Revenue"
+Monday.com contains four separate financial columns across different stages of the commercial lifecycle:
+* **`Masked Deal value` (Deals)**: *Pipeline Opportunity Value* (Pre-sale potential).
+* **`Amount in Rupees (Excl of GST) (Masked)` (Work Orders)**: *Contract / Order Book Value* (Committed delivery amount).
+* **`Billed Value in Rupees (Excl of GST.) (Masked)` (Work Orders)**: *Invoiced Revenue* (Recognized delivery work).
+* **`Collected Amount in Rupees (Incl of GST.) (Masked)` (Work Orders)**: *Realized Cash* (Cash in bank).
 
-- Python 3.10+
-- [uv](https://docs.astral.sh/uv/) (fast Python package manager)
-- A Monday.com account with API access
-- A Google AI Studio / Gemini API key
+> **Heuristic**: When a founder asks for "revenue", the agent contextually maps to Deal Value (for sales pipeline questions), Order Amount (for delivery volume questions), or Billed/Collected Amount (for financial performance), and **always surfaces the exact interpretation in the `Assumptions` drawer**.
 
-### Install uv
+### 2. Missing Value Policy (Never Coerce to Zero)
+* Blank cells, `"-"`, `"N/A"`, or unparseable values are preserved as `NaN`/`None`.
+* **We never coerce missing numbers to `0`**. Coercing missing deal values to zero would severely corrupt average deal sizes, pipeline totals, and win rate analytics.
+* Deals with null `Closure Probability` are tracked and reported separately in probability summaries rather than discarded.
 
+### 3. Date Parsing & Current Context
+* Loose relative dates (e.g. *"this quarter"*, *"last month"*) are resolved against current UTC system time (`Q3 2026`).
+* 10+ date formats (ISO, `DD/MM/YYYY`, `DD-MM-YYYY`, text dates like `"15 Mar 2024"`) are parsed into ISO strings defensively without ever crashing.
+
+---
+
+## ⚖️ Key Engineering Trade-offs
+
+| Decision | Chosen Path | Alternative Considered | Rationale |
+|---|---|---|---|
+| **Orchestration** | LangGraph StateGraph | Unbounded ReAct loop / Simple chain | Guarantees deterministic execution flow; enables explicit clarification routing and quality gates. |
+| **Numeric Computations** | Pure pandas Engine | LLM Code Interpreter / LLM Arithmetic | Completely eliminates hallucinated numbers, math drift, and incorrect floating-point rollups. |
+| **Data Access** | Direct GraphQL API (v2024-01) with MCP Probe | Pure MCP-only dependency | MCP requires enterprise admin connector setup. GraphQL works universally on all Monday accounts with zero blocker. |
+| **Cross-Board Join** | Exact-Match Normalized String Join | Levenshtein / Fuzzy Matching | Fuzzy matching risks false-positive joins between unrelated deals with generic codenames (e.g. *Batman-1* vs *Batman-2*). In corporate BI, false joins are far worse than unlinked rows. |
+| **Ambiguous Codenames** | Exclude from numeric financial rollups; disclose as caveat | Force 1:many join or arbitrary pick | Eliminates distorted double-counting when codenames repeat across unrelated deals/orders. |
+
+---
+
+## 🤖 AI Tools & Frameworks Used
+
+* **Google Gemini (Gemini 1.5 Pro / Flash via `ChatGoogleGenerativeAI`)**:
+  * Used for **Query Understanding** (extracting structured intent, canonical filters, and detecting ambiguity).
+  * Used for **Clarification Generation** (crafting a single targeted question when user input is underspecified).
+  * Used for **Insight Generation** (synthesizing pandas metrics into executive-ready markdown prose without changing numbers).
+* **LangGraph (`langgraph`)**: Stateful graph topology, conditional branching (`_route_clarification`, `_route_data_quality`, `_route_entry`), and state persistence.
+* **LangChain Core (`langchain-core`)**: Structured message primitives (`HumanMessage`, `AIMessage`, `SystemMessage`).
+* **Tenacity (`tenacity`)**: Exponential backoff and retry decorators for API rate limiting (`429`) and transient network resilience.
+* **Streamlit (`streamlit`)**: Conversational UI, session cache persistence, and secrets bridging.
+
+---
+
+## 🛠 Challenges Faced & Solutions
+
+### 1. Re-imported "Header-as-Value" Row Artifacts
+* **Challenge**: Excel exports re-imported into Monday.com contained duplicate header rows inside data rows (e.g. `Sector/service == "Sector/service"`).
+* **Solution**: Implemented `drop_header_rows(df)` which dynamically compares cell content against column titles. In live data, this cleanly purged 2 invalid rows (*Nezuko* and *Bugs Bunny*).
+
+### 2. Typo Normalization & Status Collapse
+* **Challenge**: Typo in production Monday board (`"BIlled"`) and fragmented execution statuses (`"Executed until current month"`, `"Pause / struck"`, `"Partial Completed"`).
+* **Solution**: Created declarative synonym maps in [`normalize/clean.py`](file:///Users/vishwavinayak/Documents/Development/skylark-assignment/normalize/clean.py) that map variants onto a canonical status set (`Billed`, `Ongoing`, `Paused`, `Partial`).
+
+### 3. Non-Overlapping Code Namespaces
+* **Challenge**: Work Orders use `Customer Name Code` (`WOCOMPANY_xxx`) and Deals use `Client Code` (`COMPANYxxx`). The ID numbering schemes do not correspond.
+* **Solution**: Joined on normalized exact project codenames (`Deal Name == Deal name masked`) with case-folding and whitespace trimming.
+
+### 4. Monday.com GraphQL v2024 Column Schema Quirks
+* **Challenge**: API version `2024-01` does not expose `title` on `column_values` in the `items_page` query.
+* **Solution**: Implemented two-phase schema discovery: fetched board columns metadata first to build an `id -> title` dictionary, then annotated item values dynamically.
+
+---
+
+## 🔗 Cross-Board Linkage Strategy
+
+Cross-board queries evaluate commercial pipeline commitments against actual operational execution:
+
+```
+Deals Board (344 items)               Work Orders Board (176 items)
+  ├── Deal Name: "Sasuke"  ─────────────► Deal name masked: "Sasuke"   (1:1 Clean Match ✅)
+  ├── Deal Name: "Naruto"  ─────────────► Deal name masked: "Naruto"   (1:1 Clean Match ✅)
+  └── Deal Name: "scooby-doo" (12 deals) ─► Deal name masked: "scooby-doo" (8 WOs)  (Ambiguous ⚠️)
+```
+
+### Linkage Coverage Summary (Live Data)
+* **16 Clean 1:1 Linked Projects**: Rolled up into exact deal-to-work-order realization and variance metrics.
+* **37 Ambiguous Codenames**: Codenames mapped to $>1$ Deal or $>1$ Order (e.g. *scooby-doo*). **Excluded from numeric rollups by default** to protect financial accuracy; reported in an explicit caveat section.
+* **Unmatched Rows**: 291 early-stage pipeline deals (no work order issued yet) and 123 direct/legacy work orders.
+
+---
+
+## 📋 Leadership Update Feature
+
+Triggered via **`"📊 Generate Leadership Update"`** in the sidebar, typing **`/leadership-update`**, or natural requests (*"prepare this week's update for the founders"*).
+
+### Report Structure
+1. **🎯 Pipeline Snapshot**: Active pipeline value (₹110.69 Cr), weighted value (₹43.89 Cr), stage distribution, win rate (55.9%), and null-probability disclosure.
+2. **🚚 Delivery & Operations Snapshot**: 176 work orders, 66.5% completion rate, 80.3% on-time execution, delay analysis, and ₹3.63 Cr Amount Receivable breakdown.
+3. **🌐 Sector Highlights & Alignment**: Cross-board comparison of open pipeline demand vs. active delivery capacity per sector.
+4. **⚠️ Risks & Flags**: Immediate alerts on overdue delivered work without final invoices, unbilled milestones, and stale late-stage proposals.
+5. **💡 Strategic Recommendations**: Concrete, high-impact founder actions.
+6. **🔍 Data Quality & Caveats**: Full disclosure of data completeness %, dropped header rows, and linkage coverage.
+
+---
+
+## 🚀 Potential Future Improvements
+
+With additional development time, the following high-value enhancements would be implemented:
+1. **Upstream Foreign Key in Monday.com**: Configure a native Monday.com `board-relation` / `mirror` column linking each Work Order directly to its originating Deal Item ID, replacing string codename heuristics with relational integrity.
+2. **Multi-Factor Confidence-Scored Entity Matching**: Train or configure a probabilistic entity-resolution pipeline weighting multiple signals (codename, client domain, contract value $\pm 5\%$, assigned owner, date proximity) to provide a linkage confidence score (0.00 – 1.00) with human review for borderline matches.
+3. **Time-Series Velocity & Cohort Tracking**: Ingest Monday.com activity audit logs to track stage velocity (average days spent in *Proposal $\rightarrow$ Negotiation $\rightarrow$ Won*) and quarterly revenue cohort realization.
+4. **Webhook-Driven Real-Time Sync**: Replace poll/sync buttons with Monday.com Webhooks (`item_created`, `column_value_changed`) delivering change events to a streaming state store.
+
+---
+
+## 💻 Local Setup & Streamlit Cloud Deployment
+
+### 1. Prerequisites
+* Python 3.10+
+* [uv](https://docs.astral.sh/uv/) package manager
+* Monday.com API Token & Board IDs
+* Google Gemini API Key
+
+### 2. Local Installation
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-### Installation
-
-```bash
-# Clone / extract the repo
+# Clone the repository
+git clone https://github.com/vishwavinayak/skylark-assignment.git
 cd skylark-assignment
 
-# Install all dependencies (creates .venv automatically)
-uv sync --dev
+# Install dependencies via uv
+uv sync
 
-# Configure environment
+# Configure your environment
 cp .env.example .env
-# Edit .env with your actual values
+# Fill in: MONDAY_API_TOKEN, DEALS_BOARD_ID, WORK_ORDERS_BOARD_ID, GEMINI_API_KEY
 ```
 
-> **Streamlit Cloud note:** `requirements.txt` is auto-generated from `pyproject.toml` via
-> `uv export --no-hashes --no-dev -o requirements.txt`. Commit it alongside `pyproject.toml`.
-> Streamlit Cloud uses it to install dependencies with pip.
-
-### Configure `.env`
-
-```env
-MONDAY_API_TOKEN=your_monday_api_token
-DEALS_BOARD_ID=1234567890
-WORK_ORDERS_BOARD_ID=0987654321
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_MODEL=gemini-1.5-pro
-USE_MCP=false
-```
-
-**Getting your Monday.com API token:**
-1. Click your avatar → **Administration** → **Connections** → **API**
-2. Copy your **Personal API Token** (v2)
-
-### Test connectivity
-
+### 3. Run Automated Tests
 ```bash
-uv run python -m tools.connection_test
+uv run pytest -v
+# 54 passed in ~1s
 ```
 
-### Run locally
-
+### 4. Run the Streamlit App Locally
 ```bash
 uv run streamlit run app/main.py
 ```
+Open [http://localhost:8501](http://localhost:8501) in your browser.
 
-Open [http://localhost:8501](http://localhost:8501)
-
-### Run tests
-
-```bash
-uv run pytest
+### 5. Deploy to Streamlit Community Cloud
+1. Push your repository to GitHub.
+2. Go to [share.streamlit.io](https://share.streamlit.io) and create a **New App**.
+3. Point to `streamlit_app.py` (or `app/main.py`).
+4. In **App Settings $\rightarrow$ Secrets**, paste:
+```toml
+MONDAY_API_TOKEN = "your_monday_api_token"
+DEALS_BOARD_ID = "5030966166"
+WORK_ORDERS_BOARD_ID = "5030966117"
+GEMINI_API_KEY = "your_gemini_api_key"
+GEMINI_MODEL = "gemini-1.5-pro"
+USE_MCP = "false"
 ```
-
-### Update dependencies
-
-```bash
-# Add a package
-uv add some-package
-
-# Regenerate requirements.txt for Streamlit Cloud
-uv export --no-hashes --no-dev -o requirements.txt
-```
-
----
-
-## Deployment — Streamlit Community Cloud
-
-1. **Push to GitHub** (public or private repo)
-
-2. **Go to** [share.streamlit.io](https://share.streamlit.io) → **New app**
-
-3. **Settings:**
-   - Repository: `your-github-username/skylark-assignment`
-   - Branch: `main`
-   - Main file path: `app/main.py`
-
-4. **Add Secrets** (App Settings → Secrets):
-   ```toml
-   MONDAY_API_TOKEN = "your_monday_api_token"
-   DEALS_BOARD_ID = "1234567890"
-   WORK_ORDERS_BOARD_ID = "0987654321"
-   GEMINI_API_KEY = "your_gemini_api_key"
-   GEMINI_MODEL = "gemini-1.5-pro"
-   USE_MCP = "false"
-   ```
-
-5. **Deploy** — Streamlit Cloud installs `requirements.txt` automatically.
-
----
-
-## Sample Questions
-
-| Category | Example Question |
-|---|---|
-| Pipeline | "How's our pipeline looking this quarter?" |
-| Sector | "What's the energy sector pipeline value?" |
-| Win rates | "Show me win rates by deal stage" |
-| Operations | "Which work orders are delayed by more than 2 weeks?" |
-| Cross-board | "Compare deals won vs work orders completed by sector" |
-| Leadership | "Generate a leadership update" |
-| Clarification | "How are we doing?" ← agent asks a clarifying question |
-
----
-
-## Data Quality Handling
-
-Every query surfaces a **Data Quality** expander showing:
-- Overall completeness % across the board
-- Per-field warnings (e.g. "42% of deals are missing a close date")
-
-The agent communicates these limitations explicitly rather than silently computing on incomplete data.
-
-### Messy data handled
-
-- Currency: `₹`, `$`, `,`, `1L`, `2.5Cr`, `500K`, ranges like `10L-15L`
-- Dates: 10+ formats (ISO, DD/MM/YYYY, "15 Mar 2024", etc.)
-- Sectors: synonyms (`agri` → Agriculture, `oil & gas` → Energy, etc.)
-- Stages: synonyms (`won` → Closed Won, `lost` → Closed Lost, etc.)
-- Status: (`wip` → In Progress, `done` → Done, etc.)
-- Nulls: `""`, `"-"`, `"N/A"`, `"na"`, `"TBD"` → `NaN`
-- Duplicates: exact-row deduplication
-
----
-
-## Leadership Update Feature
-
-Click **"📋 Generate Leadership Update"** in the sidebar (or ask naturally) to get a structured executive report covering:
-
-- Pipeline & Sales KPIs
-- Operations summary (completion rates, delays)
-- Financial highlights by sector
-- Risks & flags (stale deals, overdue WOs)
-- Actionable recommendations
-
-> **Interpretation:** The leadership update is a synthesis of live Monday.com data into a board-ready summary. All numbers are pandas-computed; Gemini writes the prose narrative. The agent flags data quality limitations inline.
-
----
-
-## Tech Stack Justification
-
-| Component | Choice | Reason |
-|---|---|---|
-| Agent framework | LangGraph | Explicit graph = auditable routing, easy to add nodes |
-| LLM | Gemini 1.5 Pro | Strong reasoning + 1M token context for large datasets |
-| Data access | Monday.com GraphQL API | Reliable, no admin setup; MCP available as opt-in upgrade |
-| Data cleaning | pandas | Deterministic, testable, handles real-world mess |
-| BI calculations | pandas | No LLM math = no hallucinations on numbers |
-| UI | Streamlit | Fastest path to a shareable conversational interface |
-| Deployment | Streamlit Community Cloud | Zero infra, GitHub-native, free tier |
-
----
-
-## Environment Variables Reference
-
-| Variable | Required | Description |
-|---|---|---|
-| `MONDAY_API_TOKEN` | ✅ | Monday.com Personal API Token v2 |
-| `DEALS_BOARD_ID` | ✅ | Numeric ID of your Deal Funnel board |
-| `WORK_ORDERS_BOARD_ID` | ✅ | Numeric ID of your Work Order Tracker board |
-| `GEMINI_API_KEY` | ✅ | Google AI Studio API key (also accepted as `GOOGLE_API_KEY`) |
-| `GEMINI_MODEL` | ⬜ | Model name (default: `gemini-1.5-pro`) |
-| `USE_MCP` | ⬜ | `true` to attempt Monday.com MCP before GraphQL (default: `false`) |
+5. Click **Deploy!**
